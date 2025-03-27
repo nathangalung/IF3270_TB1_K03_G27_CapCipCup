@@ -5,10 +5,9 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from core.activations import Activation, Linear
-from core.weight_initializers import initialize_weights, random_uniform_init, random_normal_init
+from core.weight_initializers import initialize_weights
 
 class Layer:
-    
     def forward(self, inputs: np.ndarray) -> np.ndarray:
         raise NotImplementedError
         
@@ -31,20 +30,27 @@ class DenseLayer(Layer):
         self.z = None
     
     def initialize_weights(self, method: str, **params):
+        seed = params.get('seed', None)
         init_params = {**params, 'input_size': self.input_size, 'output_size': self.output_size}
-        self.weights = initialize_weights(method=method, shape=(self.input_size, self.output_size), **init_params)
+        
+        self.weights = initialize_weights(
+            method=method,
+            shape=(self.input_size, self.output_size),
+            **init_params
+        )
+        
         if method in ['zero', 'xavier', 'he']:
             self.bias = np.zeros((1, self.output_size))
         elif method == 'random_uniform':
-            lower_bound = params.get('lower_bound', -0.1)
-            upper_bound = params.get('upper_bound', 0.1)
-            seed = params.get('seed', None)
-            self.bias = random_uniform_init(shape=(1, self.output_size), lower_bound=lower_bound, upper_bound=upper_bound, seed=seed)
+            lower = params.get('lower', -0.1)
+            upper = params.get('upper', 0.1)
+            rng = np.random.default_rng(seed)
+            self.bias = rng.uniform(lower, upper, size=(1, self.output_size)).astype(np.float32)
         elif method == 'random_normal':
             mean = params.get('mean', 0.0)
-            var = params.get('var', 0.1)
-            seed = params.get('seed', None)
-            self.bias = random_normal_init(shape=(1, self.output_size), mean=mean, var=var, seed=seed)
+            std = params.get('std', 0.1)
+            rng = np.random.default_rng(seed)
+            self.bias = rng.normal(mean, std, size=(1, self.output_size)).astype(np.float32)
         else:
             raise ValueError(f"Unknown weight initialization method: {method}")
     
@@ -74,6 +80,96 @@ class DenseLayer(Layer):
             raise ValueError("Gradients must be computed before updating weights")
         self.weights -= learning_rate * self.weights_gradient
         self.bias -= learning_rate * self.bias_gradient
+        
+class BatchNormalizationLayer(Layer):
+    """Layer that performs batch normalization."""
+    
+    def __init__(self, input_size: int, momentum: float = 0.99, epsilon: float = 1e-5):
+        """Initialize batch normalization layer."""
+        self.input_size = input_size
+        self.output_size = input_size
+        self.gamma = np.ones((1, input_size))  # Scale parameter
+        self.beta = np.zeros((1, input_size))  # Shift parameter
+        self.epsilon = epsilon  # Small constant for numerical stability
+        self.momentum = momentum  # Momentum for running statistics
+        
+        # Running statistics for inference
+        self.running_mean = np.zeros((1, input_size))
+        self.running_var = np.ones((1, input_size))
+        
+        # For backward pass
+        self.x = None
+        self.x_normalized = None
+        self.batch_mean = None
+        self.batch_var = None
+        self.std = None
+        
+        # For optimization
+        self.weights = self.gamma
+        self.bias = self.beta
+        self.weights_gradient = None
+        self.bias_gradient = None
+    
+    def forward(self, inputs: np.ndarray, training: bool = True) -> np.ndarray:
+        """Forward pass with batch normalization."""
+        # Store input for backward pass
+        self.x = inputs
+        
+        if training:
+            # Calculate batch statistics
+            self.batch_mean = np.mean(inputs, axis=0, keepdims=True)
+            self.batch_var = np.var(inputs, axis=0, keepdims=True)
+            
+            # Update running statistics
+            self.running_mean = self.momentum * self.running_mean + (1 - self.momentum) * self.batch_mean
+            self.running_var = self.momentum * self.running_var + (1 - self.momentum) * self.batch_var
+            
+            # Normalize
+            self.std = np.sqrt(self.batch_var + self.epsilon)
+            self.x_normalized = (inputs - self.batch_mean) / self.std
+            
+            # Scale and shift
+            output = self.gamma * self.x_normalized + self.beta
+        else:
+            # Use running statistics for inference
+            x_normalized = (inputs - self.running_mean) / np.sqrt(self.running_var + self.epsilon)
+            output = self.gamma * x_normalized + self.beta
+        
+        return output
+    
+    def backward(self, previous_layer_activations: np.ndarray, gradient: np.ndarray) -> np.ndarray:
+        """Backward pass for batch normalization."""
+        batch_size = self.x.shape[0]
+        
+        # Gradients for gamma and beta
+        self.weights_gradient = np.sum(gradient * self.x_normalized, axis=0, keepdims=True)
+        self.bias_gradient = np.sum(gradient, axis=0, keepdims=True)
+        
+        # Gradient for normalized input
+        dx_normalized = gradient * self.gamma
+        
+        # Gradient for batch variance
+        dvar = np.sum(dx_normalized * (self.x - self.batch_mean) * -0.5 * 
+                      np.power(self.batch_var + self.epsilon, -1.5), axis=0, keepdims=True)
+        
+        # Gradient for batch mean
+        dmean = np.sum(dx_normalized * -1.0 / self.std, axis=0, keepdims=True) + \
+                dvar * np.mean(-2.0 * (self.x - self.batch_mean), axis=0, keepdims=True)
+        
+        # Gradient for input
+        dx = dx_normalized / self.std + \
+             dvar * 2.0 * (self.x - self.batch_mean) / batch_size + \
+             dmean / batch_size
+        
+        return dx
+    
+    def update_weights(self, learning_rate: float) -> None:
+        """Update gamma and beta parameters."""
+        if self.weights_gradient is None or self.bias_gradient is None:
+            return
+            
+        self.gamma -= learning_rate * self.weights_gradient
+        self.beta -= learning_rate * self.bias_gradient
     
 class RMSNormalizationLayer(Layer):
     def __init__(self, input_size: int, epsilon: float = 1e-8):

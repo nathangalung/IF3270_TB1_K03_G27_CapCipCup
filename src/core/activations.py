@@ -64,22 +64,21 @@ class Tanh(Activation):
 
 
 class Softmax(Activation):
-    """Softmax activation function: f(x_i) = e^(x_i) / sum(e^(x_j))"""
+    """Softmax activation function."""
     
     def forward(self, inputs: np.ndarray) -> np.ndarray:
-        """
-        Forward pass with improved numerical stability.
-        """
-        # Shift inputs for numerical stability (subtract max)
+        """Forward pass with improved numerical stability."""
+        # Shift inputs for numerical stability
         shifted_inputs = inputs - np.max(inputs, axis=1, keepdims=True)
         
         # Calculate exponentials with shifted values
         exp_values = np.exp(shifted_inputs)
         
         # Normalize by sum
-        self.output = exp_values / np.sum(exp_values, axis=1, keepdims=True)
+        sum_exp = np.sum(exp_values, axis=1, keepdims=True)
+        self.output = exp_values / sum_exp
         
-        # Handle any remaining NaN values (rare but possible)
+        # Handle any NaN values
         self.output = np.nan_to_num(self.output, nan=1e-8, posinf=1.0, neginf=0.0)
         
         return self.output
@@ -87,7 +86,8 @@ class Softmax(Activation):
     def backward(self, gradient: np.ndarray) -> np.ndarray:
         """
         Backward pass for softmax.
-        For categorical cross-entropy loss, this is handled specially.
+        For categorical cross-entropy loss, the gradient is just passed through
+        as the gradient calculation is handled in the loss function.
         """
         return gradient
 

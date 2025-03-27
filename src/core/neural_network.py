@@ -5,7 +5,7 @@ from typing import List, Callable, Dict, Tuple, Union, Optional, Any
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from core.layers import Layer, DenseLayer, BatchNormalizationLayer, RMSNormalizationLayer, DropoutLayer
+from core.layers import Layer, DenseLayer, BatchNormalizationLayer, RMSNormalizationLayer
 from core.activations import Activation, Linear, ReLU, Sigmoid, Tanh, Softmax, Softplus, ELU
 
 
@@ -26,8 +26,13 @@ class NeuralNetwork:
         self.use_batch_norm = use_batch_norm
         self.dropout_rates = dropout_rates if dropout_rates else [0.0] * (len(layer_sizes) - 1)
         
-        # Store the seed
         self.seed = seed
+        self.beta1 = 0.9  # Momentum parameter
+        self.beta2 = 0.999  # RMSprop parameter
+        self.epsilon = 1e-8  # Small constant for numerical stability
+        self.m = {}  # First moment estimates
+        self.v = {}  # Second moment estimates
+        self.t = 0  # Timestep
         
         # Make sure dropout_rates has the correct length
         if len(self.dropout_rates) != len(layer_sizes) - 1:
@@ -147,33 +152,47 @@ class NeuralNetwork:
     
     def update_weights(self, learning_rate):
         """
-        Update weights with gradient descent and momentum.
+        Update weights using Adam optimizer.
         
         Parameters:
             learning_rate: Learning rate for weight updates
         """
-        # Initialize momentum if not already done
-        if not hasattr(self, 'velocity'):
-            self.velocity = {}
+        # Increment timestep
+        self.t += 1
+        
+        # Initialize moment estimates if not already done
+        if not self.m:
             for i, layer in enumerate(self.layers):
-                if hasattr(layer, 'weights'):
-                    self.velocity[f'w{i}'] = np.zeros_like(layer.weights)
-                    self.velocity[f'b{i}'] = np.zeros_like(layer.bias)
+                if hasattr(layer, 'weights') and layer.weights is not None:
+                    self.m[f'w{i}'] = np.zeros_like(layer.weights)
+                    self.m[f'b{i}'] = np.zeros_like(layer.bias)
+                    self.v[f'w{i}'] = np.zeros_like(layer.weights)
+                    self.v[f'b{i}'] = np.zeros_like(layer.bias)
         
-        # Momentum hyperparameter
-        momentum = 0.9
-        
-        # Update weights and biases
+        # Update weights and biases using Adam
         for i, layer in enumerate(self.layers):
-            if hasattr(layer, 'weights'):
-                # Update weights with momentum
-                self.velocity[f'w{i}'] = momentum * self.velocity[f'w{i}'] - learning_rate * layer.weights_gradient
-                layer.weights += self.velocity[f'w{i}']
+            if hasattr(layer, 'weights') and layer.weights_gradient is not None:
+                # Get gradients
+                dw = layer.weights_gradient
+                db = layer.bias_gradient
                 
-                # Update biases with momentum
-                self.velocity[f'b{i}'] = momentum * self.velocity[f'b{i}'] - learning_rate * layer.bias_gradient
-                layer.bias += self.velocity[f'b{i}']
-            
+                # Update first moment estimate (momentum)
+                self.m[f'w{i}'] = self.beta1 * self.m[f'w{i}'] + (1 - self.beta1) * dw
+                self.m[f'b{i}'] = self.beta1 * self.m[f'b{i}'] + (1 - self.beta1) * db
+                
+                # Update second moment estimate (RMSprop)
+                self.v[f'w{i}'] = self.beta2 * self.v[f'w{i}'] + (1 - self.beta2) * (dw**2)
+                self.v[f'b{i}'] = self.beta2 * self.v[f'b{i}'] + (1 - self.beta2) * (db**2)
+                
+                # Bias correction
+                m_hat_w = self.m[f'w{i}'] / (1 - self.beta1**self.t)
+                m_hat_b = self.m[f'b{i}'] / (1 - self.beta1**self.t)
+                v_hat_w = self.v[f'w{i}'] / (1 - self.beta2**self.t)
+                v_hat_b = self.v[f'b{i}'] / (1 - self.beta2**self.t)
+                
+                # Update weights and biases
+                layer.weights -= learning_rate * m_hat_w / (np.sqrt(v_hat_w) + self.epsilon)
+                layer.bias -= learning_rate * m_hat_b / (np.sqrt(v_hat_b) + self.epsilon)
     def apply_gradient_clipping(self, clip_value=5.0):
         """Apply gradient clipping to prevent exploding gradients."""
         # Calculate total gradient norm
