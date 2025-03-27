@@ -8,6 +8,7 @@ from core.activations import Activation, Linear
 from core.weight_initializers import initialize_weights, random_uniform_init, random_normal_init
 
 class Layer:
+    
     def forward(self, inputs: np.ndarray) -> np.ndarray:
         raise NotImplementedError
         
