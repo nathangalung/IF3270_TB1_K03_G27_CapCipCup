@@ -39,11 +39,9 @@ class Sigmoid(Activation):
     """Sigmoid activation function: f(x) = 1 / (1 + e^(-x))"""
     
     def forward(self, inputs: np.ndarray) -> np.ndarray:
-        self.output = np.where(
-            inputs >= 0,
-            1 / (1 + np.exp(-inputs)),
-            np.exp(inputs) / (1 + np.exp(inputs))
-        )
+        self.inputs = inputs
+        inputs = np.clip(inputs, -500, 500)
+        self.output = 1.0 / (1.0 + np.exp(-inputs))
         return self.output
     
     def backward(self, inputs: np.ndarray) -> np.ndarray:
@@ -69,15 +67,29 @@ class Softmax(Activation):
     """Softmax activation function: f(x_i) = e^(x_i) / sum(e^(x_j))"""
     
     def forward(self, inputs: np.ndarray) -> np.ndarray:
+        """
+        Forward pass with improved numerical stability.
+        """
+        # Shift inputs for numerical stability (subtract max)
         shifted_inputs = inputs - np.max(inputs, axis=1, keepdims=True)
+        
+        # Calculate exponentials with shifted values
         exp_values = np.exp(shifted_inputs)
+        
+        # Normalize by sum
         self.output = exp_values / np.sum(exp_values, axis=1, keepdims=True)
+        
+        # Handle any remaining NaN values (rare but possible)
+        self.output = np.nan_to_num(self.output, nan=1e-8, posinf=1.0, neginf=0.0)
+        
         return self.output
     
-    def backward(self, inputs: np.ndarray) -> np.ndarray:
-        # Derivative: Already calculated in the loss function CCE
-        return np.ones_like(inputs)
-
+    def backward(self, gradient: np.ndarray) -> np.ndarray:
+        """
+        Backward pass for softmax.
+        For categorical cross-entropy loss, this is handled specially.
+        """
+        return gradient
 
 class Softplus(Activation):
     """Softplus activation function: f(x) = ln(1 + e^x)"""
@@ -98,9 +110,25 @@ class ELU(Activation):
         self.alpha = alpha
     
     def forward(self, inputs: np.ndarray) -> np.ndarray:
+        # Save original inputs for backward pass
         self.inputs = inputs
-        return np.where(inputs > 0, inputs, self.alpha * (np.exp(inputs) - 1))
+        
+        # Apply ELU formula with safe exp for negative inputs
+        result = inputs.copy()
+        mask = inputs <= 0
+        # Use np.exp with clipping to avoid overflow
+        safe_neg_inputs = np.clip(inputs[mask], -30.0, 0)
+        result[mask] = self.alpha * (np.exp(safe_neg_inputs) - 1)
+        
+        return result
     
     def backward(self, inputs: np.ndarray) -> np.ndarray:
-        # Derivative: 1 if x > 0 else α * e^x
-        return np.where(inputs > 0, 1, self.alpha * np.exp(inputs))
+        # Use the stored inputs from forward pass
+        result = np.ones_like(self.inputs)
+        mask = self.inputs <= 0
+        
+        # Use np.exp with clipping to avoid overflow
+        safe_neg_inputs = np.clip(self.inputs[mask], -30.0, 0)
+        result[mask] = self.alpha * np.exp(safe_neg_inputs)
+        
+        return result

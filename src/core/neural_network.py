@@ -1,15 +1,21 @@
 import numpy as np
 import pickle
-import os
 from typing import List, Callable, Dict, Tuple, Union, Optional, Any
 
-from .layers import Layer, DenseLayer
-from .activations import Activation, Linear, ReLU, Sigmoid, Tanh, Softmax, Softplus, ELU
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from core.layers import Layer, DenseLayer, BatchNormalizationLayer, RMSNormalizationLayer, DropoutLayer
+from core.activations import Activation, Linear, ReLU, Sigmoid, Tanh, Softmax, Softplus, ELU
 
 
 class NeuralNetwork:
     def __init__(self, layer_sizes: List[int], activation_functions: List[Callable], 
-                 weight_init_method: str = "random_normal", **init_params):
+                weight_initialization: str,
+                use_batch_norm: bool = False,
+                dropout_rates: Optional[List[float]] = None,
+                seed: Optional[int] = None,
+                **init_params):
         if len(layer_sizes) < 2:
             raise ValueError("At least input and output layers are required")
         if len(activation_functions) != len(layer_sizes) - 1:
@@ -17,11 +23,24 @@ class NeuralNetwork:
         
         self.layer_sizes = layer_sizes
         self.activation_functions = activation_functions
+        self.use_batch_norm = use_batch_norm
+        self.dropout_rates = dropout_rates if dropout_rates else [0.0] * (len(layer_sizes) - 1)
+        
+        # Store the seed
+        self.seed = seed
+        
+        # Make sure dropout_rates has the correct length
+        if len(self.dropout_rates) != len(layer_sizes) - 1:
+            raise ValueError("Number of dropout rates must match number of layers - 1")
+        
+        # Create the layers
         self.layers = self._create_layers(layer_sizes, activation_functions)
-        self._initialize_weights(weight_init_method, **init_params)
+        
+        # Initialize weights using the specified method and parameters
+        self._initialize_weights(weight_initialization, seed=seed, **init_params)
     
     def _create_layers(self, layer_sizes: List[int], 
-                      activation_functions: List[Callable]) -> List[Layer]:
+                  activation_functions: List[Callable]) -> List[Layer]:
         layers = []
         
         for i in range(len(layer_sizes) - 1):
@@ -44,14 +63,30 @@ class NeuralNetwork:
                 else:
                     raise ValueError(f"Unknown activation function: {activation_functions[i]}")
             else:
-                activation = activation_functions[i]
+                activation = self.activation_functions[i]
             
-            layer = DenseLayer(
-                input_size=layer_sizes[i],
-                output_size=layer_sizes[i+1],
+            # Add dense layer
+            dense_layer = DenseLayer(
+                input_size=self.layer_sizes[i],
+                output_size=self.layer_sizes[i+1],
                 activation=activation
             )
-            layers.append(layer)
+            layers.append(dense_layer)
+            
+            # Add batch normalization if requested (but not after the output layer)
+            if self.use_batch_norm and i < len(self.layer_sizes) - 2:
+                bn_layer = BatchNormalizationLayer(
+                    input_size=self.layer_sizes[i+1]
+                )
+                layers.append(bn_layer)
+            
+            # Add dropout if rate > 0 (but not after the output layer)
+            if self.dropout_rates[i] > 0 and i < len(self.layer_sizes) - 2:
+                dropout_layer = DropoutLayer(
+                    input_size=self.layer_sizes[i+1],
+                    dropout_rate=self.dropout_rates[i]
+                )
+                layers.append(dropout_layer)
         
         return layers
     
@@ -59,49 +94,193 @@ class NeuralNetwork:
         for layer in self.layers:
             layer.initialize_weights(method, **params)
     
-    def forward_propagation(self, X: np.ndarray) -> np.ndarray:
-        current_input = X
-        for layer in self.layers:
-            current_input = layer.forward(current_input)
-        return current_input
-    
-    def backward_propagation(self, X: np.ndarray, y: np.ndarray, 
-                            loss_gradient: np.ndarray) -> None:
-        gradient = loss_gradient
+    def forward_propagation(self, X, training=True):
+        """
+        Forward propagation through all layers.
         
-        for i in reversed(range(len(self.layers))):
-            if i == 0:
-                prev_output = X
+        Args:
+            X: Input data
+            training: Whether the model is in training mode (for BN and Dropout)
+        
+        Returns:
+            Output of the final layer
+        """
+        # Input validation
+        if np.any(np.isnan(X)) or np.any(np.isinf(X)):
+            X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        A = X
+        for layer in self.layers:
+            if hasattr(layer, 'training_mode'): 
+                # For layers that support training/inference modes
+                A = layer.forward(A, training=training)
             else:
-                prev_output = self.layers[i-1].output
+                A = layer.forward(A)
             
-            gradient = self.layers[i].backward(prev_output, gradient)
+            # Check for NaN values in activations
+            if np.any(np.isnan(A)) or np.any(np.isinf(A)):
+                # Replace NaN and Inf with zeros
+                A = np.nan_to_num(A, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        return A
+
+    def backward_propagation(self, X, y, gradient):
+        """
+        Backward propagation through all layers.
+        
+        Args:
+            X: Input data
+            y: Target values
+            gradient: Initial gradient from loss function
+        """
+        # Input validation
+        if np.any(np.isnan(gradient)) or np.any(np.isinf(gradient)):
+            gradient = np.nan_to_num(gradient, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # Check for NaN values in gradient and replace with zeros
+        dA = gradient
+        for i in range(len(self.layers) - 1, -1, -1):
+            if i == 0:
+                dA = self.layers[i].backward(X, dA)
+            else:
+                dA = self.layers[i].backward(self.layers[i-1].output, dA)
     
-    def update_weights(self, learning_rate: float) -> None:
+    def update_weights(self, learning_rate):
+        """
+        Update weights with gradient descent and momentum.
+        
+        Parameters:
+            learning_rate: Learning rate for weight updates
+        """
+        # Initialize momentum if not already done
+        if not hasattr(self, 'velocity'):
+            self.velocity = {}
+            for i, layer in enumerate(self.layers):
+                if hasattr(layer, 'weights'):
+                    self.velocity[f'w{i}'] = np.zeros_like(layer.weights)
+                    self.velocity[f'b{i}'] = np.zeros_like(layer.bias)
+        
+        # Momentum hyperparameter
+        momentum = 0.9
+        
+        # Update weights and biases
+        for i, layer in enumerate(self.layers):
+            if hasattr(layer, 'weights'):
+                # Update weights with momentum
+                self.velocity[f'w{i}'] = momentum * self.velocity[f'w{i}'] - learning_rate * layer.weights_gradient
+                layer.weights += self.velocity[f'w{i}']
+                
+                # Update biases with momentum
+                self.velocity[f'b{i}'] = momentum * self.velocity[f'b{i}'] - learning_rate * layer.bias_gradient
+                layer.bias += self.velocity[f'b{i}']
+            
+    def apply_gradient_clipping(self, clip_value=5.0):
+        """Apply gradient clipping to prevent exploding gradients."""
+        # Calculate total gradient norm
+        total_norm = 0
         for layer in self.layers:
-            layer.update_weights(learning_rate)
+            if hasattr(layer, 'weights_gradient') and layer.weights_gradient is not None:
+                total_norm += np.sum(np.square(layer.weights_gradient))
+            if hasattr(layer, 'bias_gradient') and layer.bias_gradient is not None:
+                total_norm += np.sum(np.square(layer.bias_gradient))
+        
+        total_norm = np.sqrt(total_norm)
+        
+        # Apply clipping if the norm exceeds the threshold
+        if total_norm > clip_value:
+            scale = clip_value / (total_norm + 1e-7)
+            for layer in self.layers:
+                if hasattr(layer, 'weights_gradient') and layer.weights_gradient is not None:
+                    layer.weights_gradient *= scale
+                if hasattr(layer, 'bias_gradient') and layer.bias_gradient is not None:
+                    layer.bias_gradient *= scale
     
-    def train_batch(self, X_batch: np.ndarray, y_batch: np.ndarray, 
-                   loss_function: Callable, learning_rate: float) -> float:
-        y_pred = self.forward_propagation(X_batch)
+    def train_batch(self, X_batch, y_batch, learning_rate, loss_function):
+        """
+        Train model on a single batch.
         
-        loss_value = loss_function.loss(y_batch, y_pred)
-        
-        loss_gradient = loss_function.gradient(y_batch, y_pred)
-        
-        self.backward_propagation(X_batch, y_batch, loss_gradient)
-        
-        self.update_weights(learning_rate)
-        
-        return loss_value
+        Parameters:
+        -----------
+        X_batch: np.ndarray
+            Batch of input data
+        y_batch: np.ndarray
+            Batch of target data
+        learning_rate: float
+            Learning rate for weight updates
+        loss_function: callable
+            Loss function to use
+            
+        Returns:
+        --------
+        float: Batch loss value
+        """
+        try:
+            # Forward pass with training=True
+            y_pred = self.forward_propagation(X_batch, training=True)
+            
+            # Check for NaN values in prediction
+            if np.any(np.isnan(y_pred)):
+                print("Warning: NaN values detected in forward pass")
+                # Replace NaN with small values
+                y_pred = np.nan_to_num(y_pred, nan=1e-8)
+            
+            # Calculate loss
+            loss_value = loss_function.loss(y_batch, y_pred)
+            
+            # Add regularization terms to loss if applicable
+            reg_loss = 0
+            total_weights = 0
+            
+            for layer in self.layers:
+                if hasattr(layer, 'weights'):
+                    layer_weights = layer.weights.size
+                    total_weights += layer_weights
+                    
+                    if hasattr(layer, 'l1_lambda') and layer.l1_lambda > 0:
+                        reg_loss += layer.l1_lambda * np.sum(np.abs(layer.weights))
+                    if hasattr(layer, 'l2_lambda') and layer.l2_lambda > 0:
+                        reg_loss += 0.5 * layer.l2_lambda * np.sum(np.square(layer.weights))
+            
+            # Normalize by total number of weights
+            if total_weights > 0:
+                reg_loss = reg_loss / total_weights
+                
+            loss_value += reg_loss
+            
+            # Calculate initial gradient
+            loss_gradient = loss_function.gradient(y_batch, y_pred)
+            
+            # Check for NaN in loss gradient
+            if np.any(np.isnan(loss_gradient)):
+                print("Warning: NaN values detected in loss gradient")
+                # Replace NaN with zeros
+                loss_gradient = np.nan_to_num(loss_gradient, nan=0.0)
+            
+            # Backward pass
+            self.backward_propagation(X_batch, y_batch, loss_gradient)
+            
+            # Apply gradient clipping with a stricter threshold for L1 regularization
+            self.apply_gradient_clipping(clip_value=1.0)
+            
+            # Update weights
+            self.update_weights(learning_rate)
+            
+            # Final NaN check on loss
+            if np.isnan(loss_value):
+                return 0.0
+                
+            return loss_value
+        except Exception as e:
+            print(f"Error in train_batch: {e}")
+            return 0.0
     
     def train(self, X_train: np.ndarray, y_train: np.ndarray, 
+              learning_rate: float, 
               loss_function: Callable,
-              X_val: Optional[np.ndarray] = None, 
-              y_val: Optional[np.ndarray] = None,
-              batch_size: int = 32, 
-              learning_rate: float = 0.01, 
-              epochs: int = 100, 
+              X_val: Optional[np.ndarray], 
+              y_val: Optional[np.ndarray],
+              batch_size: int = 1,
+              epochs: int = 5, 
               verbose: int = 1) -> Dict[str, List[float]]:
         
         training_history = {
@@ -125,7 +304,7 @@ class NeuralNetwork:
                 X_batch = X_shuffled[start_idx:end_idx]
                 y_batch = y_shuffled[start_idx:end_idx]
                 
-                batch_loss = self.train_batch(X_batch, y_batch, loss_function, learning_rate)
+                batch_loss = self.train_batch(X_batch, y_batch, learning_rate, loss_function)
                 epoch_loss += batch_loss
                 
                 if verbose == 1:
@@ -154,7 +333,19 @@ class NeuralNetwork:
         return training_history
     
     def predict(self, X: np.ndarray) -> np.ndarray:
-        return self.forward_propagation(X)
+        """
+        Make predictions on data.
+        
+        Parameters:
+        -----------
+        X: np.ndarray
+            Input data
+            
+        Returns:
+        --------
+        np.ndarray: Predictions
+        """
+        return self.forward_propagation(X, training=False)
     
     def display_model(self) -> None:
         print("Neural Network Structure:")
@@ -181,82 +372,6 @@ class NeuralNetwork:
         
         total_params = sum(layer.weights.size + layer.bias.size for layer in self.layers)
         print(f"Total parameters: {total_params}")
-    
-    def plot_weight_distribution(self, layers: List[int] = None) -> None:
-        try:
-            import matplotlib.pyplot as plt
-            import seaborn as sns
-        except ImportError:
-            print("matplotlib and seaborn are required for plotting weight distributions.")
-            return
-        
-        if layers is None:
-            layers = list(range(len(self.layers)))
-        
-        fig, axs = plt.subplots(len(layers), 2, figsize=(12, 4 * len(layers)))
-        
-        if len(layers) == 1:
-            axs = np.array([axs])
-        
-        for i, layer_idx in enumerate(layers):
-            if layer_idx >= len(self.layers):
-                print(f"Warning: Layer {layer_idx} does not exist. Skipping.")
-                continue
-            
-            layer = self.layers[layer_idx]
-            
-            sns.histplot(layer.weights.flatten(), kde=True, ax=axs[i, 0])
-            axs[i, 0].set_title(f"Layer {layer_idx+1} Weight Distribution")
-            axs[i, 0].set_xlabel("Weight Value")
-            axs[i, 0].set_ylabel("Frequency")
-            
-            sns.histplot(layer.bias.flatten(), kde=True, ax=axs[i, 1])
-            axs[i, 1].set_title(f"Layer {layer_idx+1} Bias Distribution")
-            axs[i, 1].set_xlabel("Bias Value")
-            axs[i, 1].set_ylabel("Frequency")
-        
-        plt.tight_layout()
-        plt.show()
-    
-    def plot_gradient_distribution(self, layers: List[int] = None) -> None:
-        try:
-            import matplotlib.pyplot as plt
-            import seaborn as sns
-        except ImportError:
-            print("matplotlib and seaborn are required for plotting gradient distributions.")
-            return
-        
-        if layers is None:
-            layers = list(range(len(self.layers)))
-        
-        if not hasattr(self.layers[0], 'weights_gradient') or self.layers[0].weights_gradient is None:
-            print("Gradients have not been calculated yet. Run backward propagation first.")
-            return
-        
-        fig, axs = plt.subplots(len(layers), 2, figsize=(12, 4 * len(layers)))
-        
-        if len(layers) == 1:
-            axs = np.array([axs])
-        
-        for i, layer_idx in enumerate(layers):
-            if layer_idx >= len(self.layers):
-                print(f"Warning: Layer {layer_idx} does not exist. Skipping.")
-                continue
-            
-            layer = self.layers[layer_idx]
-            
-            sns.histplot(layer.weights_gradient.flatten(), kde=True, ax=axs[i, 0])
-            axs[i, 0].set_title(f"Layer {layer_idx+1} Weight Gradient Distribution")
-            axs[i, 0].set_xlabel("Weight Gradient Value")
-            axs[i, 0].set_ylabel("Frequency")
-            
-            sns.histplot(layer.bias_gradient.flatten(), kde=True, ax=axs[i, 1])
-            axs[i, 1].set_title(f"Layer {layer_idx+1} Bias Gradient Distribution")
-            axs[i, 1].set_xlabel("Bias Gradient Value")
-            axs[i, 1].set_ylabel("Frequency")
-        
-        plt.tight_layout()
-        plt.show()
     
     def save(self, filename: str) -> None:
         os.makedirs(os.path.dirname(filename) if os.path.dirname(filename) else '.', exist_ok=True)
