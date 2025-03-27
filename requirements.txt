@@ -7,15 +7,4 @@ scikit-learn>=1.0.0
 # For Jupyter notebooks
 jupyter>=1.0.0
 notebook>=6.4.0
-ipywidgets>=7.6.0
-
-# For testing
-pytest>=7.0.0
-
-# For documentation
-sphinx>=4.0.0
-sphinx-rtd-theme>=1.0.0
-
-# For comparison
-tensorflow>=2.8.0
-torch>=1.10.0
+ipywidgets>=7.6.0 
