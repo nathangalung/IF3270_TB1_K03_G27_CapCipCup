@@ -1,96 +1,63 @@
 import numpy as np
-from typing import Callable, Dict, Optional, Union, Any
-from .activations import Activation
+from typing import Optional
 
-
-class Layer:
-    """Base layer interface for neural network"""
+class Activation:
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
     
-    def forward(self, inputs: np.ndarray) -> np.ndarray:
-        raise NotImplementedError
-        
-    def backward(self, inputs: np.ndarray, gradient: np.ndarray) -> np.ndarray:
-        raise NotImplementedError
-        
-    def update_weights(self, learning_rate: float) -> None:
+    def backward(self, x: np.ndarray, grad: np.ndarray) -> np.ndarray:
         raise NotImplementedError
 
-
-class DenseLayer(Layer):
-    """Fully connected (dense) layer implementation"""
+class Sigmoid(Activation):
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        return 1 / (1 + np.exp(-x))
     
+    def backward(self, x: np.ndarray, grad: np.ndarray) -> np.ndarray:
+        sigmoid_x = self.forward(x)
+        return grad * sigmoid_x * (1 - sigmoid_x)
+
+class DenseLayer:
     def __init__(self, input_size: int, output_size: int, activation: Activation):
         self.input_size = input_size
         self.output_size = output_size
         self.activation = activation
         
-        # Initialize weights and biases to None
-        self.weights = None
-        self.bias = None
-        self.weights_gradient = None
-        self.bias_gradient = None
+        self.weights = np.random.randn(input_size, output_size) * 0.01
+        self.bias = np.zeros((1, output_size))
         
-        # Cache for backward pass
-        self.output = None
-        self.z = None
-    
-    def initialize_weights(self, method: str, **params):
-        seed = params.get('seed', None)
-        if seed is not None:
-            np.random.seed(seed)
+        self.input_cache = None
+        self.output_cache = None
         
-        # if method == 'zero':
-            
-            
-        # elif method == 'random_uniform':
-            
-            
-        # elif method == 'random_normal':
-            
-            
-        # elif method == 'xavier':
-            
-            
-        # elif method == 'he':
-            
-            
-        else:
-            raise ValueError(f"Unknown weight initialization method: {method}")
-    
     def forward(self, inputs: np.ndarray) -> np.ndarray:
-        if self.weights is None or self.bias is None:
-            raise ValueError("Weights and bias must be initialized before forward pass")
-            
-        # Linear transformation: Z = X·W + b
-        self.z = np.dot(inputs, self.weights) + self.bias
-        
-        # Apply activation function
-        self.output = self.activation.forward(self.z)
-        
-        return self.output
+        self.input_cache = inputs
+        z = np.dot(inputs, self.weights) + self.bias
+        self.output_cache = self.activation.forward(z)
+        return self.output_cache
     
-    def backward(self, inputs: np.ndarray, gradient: np.ndarray) -> np.ndarray:
-        # Gradient through activation function
-        dZ = self.activation.backward(self.z) * gradient
+    def backward(self, grad: np.ndarray, learning_rate: float) -> np.ndarray:
+        dZ = self.activation.backward(self.output_cache, grad)
+        dW = np.dot(self.input_cache.T, dZ) / self.input_cache.shape[0]
+        db = np.sum(dZ, axis=0, keepdims=True) / self.input_cache.shape[0]
         
-        # Gradient of weights: dW = X^T · dZ
-        batch_size = inputs.shape[0]
-        self.weights_gradient = np.dot(inputs.T, dZ) / batch_size
+        grad_input = np.dot(dZ, self.weights.T)
         
-        # Gradient of bias: db = mean(dZ)
-        self.bias_gradient = np.mean(dZ, axis=0, keepdims=True)
+        self.weights -= learning_rate * dW
+        self.bias -= learning_rate * db
         
-        # Gradient to pass to previous layer: dX = dZ · W^T
-        dX = np.dot(dZ, self.weights.T)
+        return grad_input
+
+class RMSNormalizationLayer:
+    def __init__(self, input_size: int, epsilon: float = 1e-8):
+        self.input_size = input_size
+        self.epsilon = epsilon
+        self.gamma = np.ones((1, input_size))
         
-        return dX
+    def forward(self, inputs: np.ndarray) -> np.ndarray:
+        mean_square = np.mean(np.square(inputs), axis=1, keepdims=True)
+        self.rms = np.sqrt(mean_square + self.epsilon)
+        return self.gamma * (inputs / self.rms)
     
-    def update_weights(self, learning_rate: float) -> None:
-        if self.weights_gradient is None or self.bias_gradient is None:
-            raise ValueError("Gradients must be computed before updating weights")
-        
-        # Update weights: W = W - lr * dW
-        self.weights -= learning_rate * self.weights_gradient
-        
-        # Update bias: b = b - lr * db
-        self.bias -= learning_rate * self.bias_gradient
+    def backward(self, grad: np.ndarray) -> np.ndarray:
+        d_gamma = np.sum(grad * (self.input_cache / self.rms), axis=0, keepdims=True)
+        d_input = grad / self.rms
+        return d_input
