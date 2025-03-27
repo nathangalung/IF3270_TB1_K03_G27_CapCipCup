@@ -5,7 +5,7 @@ from typing import List, Callable, Dict, Tuple, Union, Optional, Any
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from core.layers import Layer, DenseLayer, BatchNormalizationLayer, RMSNormalizationLayer, DropoutLayer
+from core.layers import Layer, DenseLayer, RMSNormalizationLayer
 from core.activations import Activation, Linear, ReLU, Sigmoid, Tanh, Softmax, Softplus, ELU
 
 
@@ -23,15 +23,9 @@ class NeuralNetwork:
         
         self.layer_sizes = layer_sizes
         self.activation_functions = activation_functions
-        self.use_batch_norm = use_batch_norm
-        self.dropout_rates = dropout_rates if dropout_rates else [0.0] * (len(layer_sizes) - 1)
         
         # Store the seed
         self.seed = seed
-        
-        # Make sure dropout_rates has the correct length
-        if len(self.dropout_rates) != len(layer_sizes) - 1:
-            raise ValueError("Number of dropout rates must match number of layers - 1")
         
         # Create the layers
         self.layers = self._create_layers(layer_sizes, activation_functions)
@@ -72,22 +66,7 @@ class NeuralNetwork:
                 activation=activation
             )
             layers.append(dense_layer)
-            
-            # Add batch normalization if requested (but not after the output layer)
-            if self.use_batch_norm and i < len(self.layer_sizes) - 2:
-                bn_layer = BatchNormalizationLayer(
-                    input_size=self.layer_sizes[i+1]
-                )
-                layers.append(bn_layer)
-            
-            # Add dropout if rate > 0 (but not after the output layer)
-            if self.dropout_rates[i] > 0 and i < len(self.layer_sizes) - 2:
-                dropout_layer = DropoutLayer(
-                    input_size=self.layer_sizes[i+1],
-                    dropout_rate=self.dropout_rates[i]
-                )
-                layers.append(dropout_layer)
-        
+
         return layers
     
     def _initialize_weights(self, method: str, **params):
