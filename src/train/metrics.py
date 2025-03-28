@@ -60,7 +60,7 @@ def precision_score(y_true, y_pred, average='binary', per_class=True):
         tp_sum = sum(np.sum((y_pred == cls) & (y_true == cls)) for cls in range(num_classes))
         fp_sum = sum(np.sum((y_pred == cls) & (y_true != cls)) for cls in range(num_classes))
         return tp_sum / (tp_sum + fp_sum) if (tp_sum + fp_sum) > 0 else 0.0
-    else:  # weighted
+    else:
         # Weight by class frequency
         class_counts = np.bincount(y_true, minlength=num_classes)
         sample_count = len(y_true)
