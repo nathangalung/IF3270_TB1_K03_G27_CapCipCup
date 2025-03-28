@@ -1,6 +1,4 @@
 import numpy as np
-from typing import Union
-
 
 class Activation:
     """Base class for activation functions"""
@@ -67,28 +65,16 @@ class Softmax(Activation):
     """Softmax activation function."""
     
     def forward(self, inputs: np.ndarray) -> np.ndarray:
-        """Forward pass with improved numerical stability."""
-        # Shift inputs for numerical stability
         shifted_inputs = inputs - np.max(inputs, axis=1, keepdims=True)
-        
-        # Calculate exponentials with shifted values
         exp_values = np.exp(shifted_inputs)
-        
-        # Normalize by sum
         sum_exp = np.sum(exp_values, axis=1, keepdims=True)
         self.output = exp_values / sum_exp
-        
-        # Handle any NaN values
         self.output = np.nan_to_num(self.output, nan=1e-8, posinf=1.0, neginf=0.0)
         
         return self.output
     
     def backward(self, gradient: np.ndarray) -> np.ndarray:
-        """
-        Backward pass for softmax.
-        For categorical cross-entropy loss, the gradient is just passed through
-        as the gradient calculation is handled in the loss function.
-        """
+        # Backward pass for softmax.
         return gradient
 
 class Softplus(Activation):
@@ -110,24 +96,18 @@ class ELU(Activation):
         self.alpha = alpha
     
     def forward(self, inputs: np.ndarray) -> np.ndarray:
-        # Save original inputs for backward pass
         self.inputs = inputs
-        
-        # Apply ELU formula with safe exp for negative inputs
         result = inputs.copy()
         mask = inputs <= 0
-        # Use np.exp with clipping to avoid overflow
         safe_neg_inputs = np.clip(inputs[mask], -30.0, 0)
         result[mask] = self.alpha * (np.exp(safe_neg_inputs) - 1)
         
         return result
     
     def backward(self, inputs: np.ndarray) -> np.ndarray:
-        # Use the stored inputs from forward pass
+        # Derivative: 1 if x > 0 else α * e^x
         result = np.ones_like(self.inputs)
         mask = self.inputs <= 0
-        
-        # Use np.exp with clipping to avoid overflow
         safe_neg_inputs = np.clip(self.inputs[mask], -30.0, 0)
         result[mask] = self.alpha * np.exp(safe_neg_inputs)
         

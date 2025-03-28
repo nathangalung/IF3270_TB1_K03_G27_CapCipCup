@@ -1,137 +1,48 @@
 import numpy as np
-from typing import Union
-
 
 class Loss:
     """Base class for loss functions"""
     
-    def loss(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
-        """
-        Calculate the loss value
-        
-        Parameters:
-        -----------
-        y_true: np.ndarray
-            True labels
-        y_pred: np.ndarray
-            Predicted labels
-            
-        Returns:
-        --------
-        float: Loss value
-        """
+    def loss(self, y_true, y_pred):
+        """Calculate loss value"""
         raise NotImplementedError
     
-    def gradient(self, y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
-        """
-        Calculate the gradient of the loss
-        
-        Parameters:
-        -----------
-        y_true: np.ndarray
-            True labels
-        y_pred: np.ndarray
-            Predicted labels
-            
-        Returns:
-        --------
-        np.ndarray: Gradient of the loss with respect to y_pred
-        """
+    def gradient(self, y_true, y_pred):
+        """Calculate gradient of loss with respect to predictions"""
         raise NotImplementedError
 
 
 class MeanSquaredError(Loss):
-    """Mean Squared Error: MSE = (1/n) * Σ(y_true - y_pred)²"""
+    """Mean Squared Error loss function"""
     
-    def loss(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
-        """
-        Calculate MSE loss
-        
-        Parameters:
-        -----------
-        y_true: np.ndarray
-            True labels (batch_size, output_size)
-        y_pred: np.ndarray
-            Predicted labels (batch_size, output_size)
-            
-        Returns:
-        --------
-        float: MSE loss value
-        """
+    def loss(self, y_true, y_pred):
+        """Compute MSE: (1/n) * sum((y_true - y_pred)^2)"""
         return np.mean(np.square(y_true - y_pred))
     
-    def gradient(self, y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
-        """
-        Calculate gradient of MSE loss
-        
-        Parameters:
-        -----------
-        y_true: np.ndarray
-            True labels (batch_size, output_size)
-        y_pred: np.ndarray
-            Predicted labels (batch_size, output_size)
-            
-        Returns:
-        --------
-        np.ndarray: Gradient = -2(y_true - y_pred)/n
-        """
+    def gradient(self, y_true, y_pred):
+        """Gradient of MSE: -2(y_true - y_pred)/n"""
         batch_size = y_true.shape[0]
         return -2 * (y_true - y_pred) / batch_size
 
 
 class BinaryCrossEntropy(Loss):
-    """Binary Cross-Entropy: BCE = -(1/n) * Σ[y_true * log(y_pred) + (1 - y_true) * log(1 - y_pred)]"""
+    """Binary Cross-Entropy loss function"""
     
-    def __init__(self, epsilon: float = 1e-15):
-        """
-        Initialize BCE loss
-        
-        Parameters:
-        -----------
-        epsilon: float
-            Small constant to avoid log(0)
-        """
+    def __init__(self, epsilon=1e-15):
+        """Initialize with small epsilon to prevent log(0)"""
         self.epsilon = epsilon
     
-    def loss(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
-        """
-        Calculate BCE loss
-        
-        Parameters:
-        -----------
-        y_true: np.ndarray
-            True labels (batch_size, 1) or (batch_size,)
-        y_pred: np.ndarray
-            Predicted probabilities (batch_size, 1) or (batch_size,)
-            
-        Returns:
-        --------
-        float: BCE loss value
-        """
-        # Clip predicted values to avoid numerical instability
+    def loss(self, y_true, y_pred):
+        """Compute BCE: -mean(y_true*log(y_pred) + (1-y_true)*log(1-y_pred))"""
+        # Clip predictions for numerical stability
         y_pred = np.clip(y_pred, self.epsilon, 1 - self.epsilon)
         
-        # Calculate binary cross-entropy
-        bce = -np.mean(y_true * np.log(y_pred) + (1 - y_true) * np.log(1 - y_pred))
-        
-        return bce
+        # Calculate loss
+        return -np.mean(y_true * np.log(y_pred) + (1 - y_true) * np.log(1 - y_pred))
     
-    def gradient(self, y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
-        """
-        Calculate gradient of BCE loss
-        
-        Parameters:
-        -----------
-        y_true: np.ndarray
-            True labels (batch_size, 1) or (batch_size,)
-        y_pred: np.ndarray
-            Predicted probabilities (batch_size, 1) or (batch_size,)
-            
-        Returns:
-        --------
-        np.ndarray: Gradient = (y_pred - y_true) / (y_pred * (1 - y_pred))
-        """
-        # Clip predicted values to avoid numerical instability
+    def gradient(self, y_true, y_pred):
+        """Gradient of BCE loss"""
+        # Clip predictions for numerical stability
         y_pred = np.clip(y_pred, self.epsilon, 1 - self.epsilon)
         
         # Calculate gradient
@@ -140,65 +51,30 @@ class BinaryCrossEntropy(Loss):
 
 
 class CategoricalCrossEntropy(Loss):
-    """Categorical Cross-Entropy: CCE = -(1/n) * Σ[Σ(y_true * log(y_pred))]"""
+    """Categorical Cross-Entropy loss function"""
     
-    def __init__(self, epsilon: float = 1e-15):
-        """
-        Initialize CCE loss
-        
-        Parameters:
-        -----------
-        epsilon: float
-            Small constant to avoid log(0)
-        """
+    def __init__(self, epsilon=1e-15):
+        """Initialize with small epsilon to prevent log(0)"""
         self.epsilon = epsilon
     
-    def loss(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
-        """
-        Calculate CCE loss
+    def loss(self, y_true, y_pred):
+        """Compute CCE for one-hot encoded or class index labels"""
+        # Clip predictions for numerical stability
+        y_pred = np.clip(y_pred, self.epsilon, 1 - self.epsilon)
         
-        Parameters:
-        -----------
-        y_true: np.ndarray
-            True labels (one-hot encoded)
-        y_pred: np.ndarray
-            Predicted probabilities
-            
-        Returns:
-        --------
-        float: CCE loss value
-        """
-        # Clip predictions to avoid log(0)
-        y_pred_clipped = np.clip(y_pred, self.epsilon, 1 - self.epsilon)
+        n_samples = y_true.shape[0]
         
-        # For numerical stability when using softmax outputs
+        # Handle both index labels and one-hot encoded labels
         if len(y_true.shape) == 1:
-            # If labels are provided as indices, convert to one-hot
-            n_samples = len(y_true)
-            loss_value = -np.sum(np.log(y_pred_clipped[np.arange(n_samples), y_true])) / n_samples
+            # For class indices
+            return -np.sum(np.log(y_pred[np.arange(n_samples), y_true])) / n_samples
         else:
-            # If labels are one-hot encoded
-            n_samples = y_true.shape[0]
-            loss_value = -np.sum(y_true * np.log(y_pred_clipped)) / n_samples
-            
-        return loss_value
+            # For one-hot encoded
+            return -np.sum(y_true * np.log(y_pred)) / n_samples
     
-    def gradient(self, y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
-        """
-        Calculate gradient of CCE loss
-        
-        Parameters:
-        -----------
-        y_true: np.ndarray
-            True labels (one-hot encoded)
-        y_pred: np.ndarray
-            Predicted probabilities
-            
-        Returns:
-        --------
-        np.ndarray: Gradient of CCE loss
-        """
-        # Convert integer labels to one-hot if needed
+    def gradient(self, y_true, y_pred):
+        """Gradient of CCE loss: (y_pred - y_true_one_hot)/n"""
+        # Convert to one-hot if needed
         if len(y_true.shape) == 1:
             n_samples = len(y_true)
             n_classes = y_pred.shape[1]
@@ -208,11 +84,5 @@ class CategoricalCrossEntropy(Loss):
             y_true_one_hot = y_true
             n_samples = y_true.shape[0]
         
-        # For softmax + categorical cross-entropy, gradient is (y_pred - y_true)
-        # This is more numerically stable than separate calculations
-        gradient = y_pred - y_true_one_hot
-        
-        # Normalize by batch size
-        gradient = gradient / n_samples
-        
-        return gradient
+        # When using softmax outputs, gradient simplifies to (y_pred - y_true)
+        return (y_pred - y_true_one_hot) / n_samples
